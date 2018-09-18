@@ -123,12 +123,15 @@ static const char * cmd_reverse_search(int *cursor, clock_t *kbd_to,
 
 const char *edit_cmdline(const char *input, int top /*, int width */ ,
 			 int (*pDraw_Menu) (int, int, int),
-			 void (*show_fkey) (int), bool *timedout)
+			 int (*show_fkey) (int), bool *timedout)
 {
     static char cmdline[MAX_CMDLINE_LEN] = { };
-    int key, len, prev_len, cursor;
+    int cursor_dy=-1;
+    int cursor_dx =-1;
+
+    int key, len, cmdline_ptr;
     int redraw = 0;
-    int x, y;
+
     bool done = false;
     const char *ret;
     int width = 0;
@@ -142,15 +145,9 @@ const char *edit_cmdline(const char *input, int top /*, int width */ ,
 	    width = 80;
     }
 
-    len = cursor = 0;
-    prev_len = 0;
-    x = y = 0;
+    len = cmdline_ptr = 0;
 
-    /*
-     * Before we start messing with the x,y coordinates print 'input'
-     * so that it follows whatever text has been written to the screen
-     * previously.
-     */
+    printf("\0337"); 			//save cursor with scroll
     printf("%s ", input);
 
     while (!done) {
@@ -161,302 +158,295 @@ const char *edit_cmdline(const char *input, int top /*, int width */ ,
 	    clear_screen();
 	    if (pDraw_Menu)
 		    (*pDraw_Menu) (-1, top, 1);
-	    prev_len = 0;
-	    printf("\033[2J\033[H");
-	    // printf("\033[0m\033[2J\033[H");
+	    printf("\033[2J\033[H");			//clear entire screen, move cursor to upper left corner
+	    printf("\0337"); 				//save cursor with scroll
 	}
 
-	if (redraw > 0) {
-	    int dy, at;
+    if (redraw > 0) {
 
-	    prev_len = max(len, prev_len);
+        /* Redraw the command line */
+        printf("\033[?25l");	//hides the cursor
+        printf("\0338"); 	//recover cursor with scroll
+        printf("%s ", input); 	//input = "boot:"
 
-	    /* Redraw the command line */
-	    printf("\033[?25l");
-	    printf("\033[1G%s ", input);
+        printf("%s", cmdline);
 
-	    x = strlen(input);
-	    y = 0;
-	    at = 0;
-	    while (at < prev_len) {
-		putchar(at >= len ? ' ' : cmdline[at]);
-		at++;
-		x++;
-		if (x >= width) {
-		    printf("\r\n");
-		    x = 0;
-		    y++;
-		}
-	    }
-	    printf("\033[K\r");
+        printf("\033[K\r");	//clear line from cursor right
 
-	    dy = y - (cursor + strlen(input) + 1) / width;
-	    x = (cursor + strlen(input) + 1) % width;
+        printf("\0338"); 	//recover cursor with scroll
 
-	    if (dy) {
-		printf("\033[%dA", dy);
-		y -= dy;
-	    }
-	    if (x)
-		printf("\033[%dC", x);
-	    printf("\033[?25h");
-	    prev_len = len;
-	    redraw = 0;
-	}
 
-	key = mygetkey_timeout(&kbd_to, &tto);
+        cursor_dy = ((strlen(input) +1 + cmdline_ptr ) / width );
+        if(cursor_dy !=0 )
+            printf("\033[%dB",cursor_dy);	//Move cursor down N lines
 
-	switch (key) {
-	case KEY_NONE:
-	    /* We timed out. */
-	    *timedout = true;
-	    return NULL;
+        cursor_dx  = ((strlen(input) +1 + cmdline_ptr +1 ) % width );
+        if(cursor_dx==0)
+            cursor_dx=width;
 
-	case KEY_CTRL('L'):
-	    redraw = 2;
-	    break;
+        printf("\033[%dC", cursor_dx-1);	//move cursor right N columns from current position
+        printf("\033[?25h");			//shows the cursor
 
-	case KEY_ENTER:
-	case KEY_CTRL('J'):
-	    ret = cmdline;
-	    done = true;
-	    break;
+        redraw = 0;
+    }
 
-	case KEY_BACKSPACE:
-	case KEY_DEL:
-	    if (cursor) {
-		memmove(cmdline + cursor - 1, cmdline + cursor,
-			len - cursor + 1);
-		len--;
-		cursor--;
-		redraw = 1;
-	    }
-	    break;
+    key = mygetkey_timeout(&kbd_to, &tto);
 
-	case KEY_CTRL('D'):
-	case KEY_DELETE:
-	    if (cursor < len) {
-		memmove(cmdline + cursor, cmdline + cursor + 1, len - cursor);
-		len--;
-		redraw = 1;
-	    }
-	    break;
+    switch (key) {
+    case KEY_NONE:
+        /* We timed out. */
+        *timedout = true;
+        return NULL;
 
-	case KEY_CTRL('U'):
-	    if (len) {
-		len = cursor = 0;
-		cmdline[len] = '\0';
-		redraw = 1;
-	    }
-	    break;
+    case KEY_CTRL('L'):
+        redraw = 2;
+        break;
 
-	case KEY_CTRL('W'):
-	    if (cursor) {
-		int prevcursor = cursor;
+    case KEY_ENTER:
+    case KEY_CTRL('J'):
+        ret = cmdline;
+        done = true;
+        break;
 
-		while (cursor && my_isspace(cmdline[cursor - 1]))
-		    cursor--;
+    case KEY_BACKSPACE:
+    case KEY_DEL:
+        if (cmdline_ptr) {
+            memmove(cmdline + (cmdline_ptr - 1), cmdline + cmdline_ptr,
+                strlen(cmdline + cmdline_ptr)+1);
 
-		while (cursor && !my_isspace(cmdline[cursor - 1]))
-		    cursor--;
+            len--;
+            cmdline_ptr--;
+            redraw = 1;
+        }
+        break;
+
+    case KEY_CTRL('D'):
+    case KEY_DELETE:
+        if (cmdline_ptr < len) {
+            memmove(cmdline + cmdline_ptr, cmdline + cmdline_ptr + 1, len - cmdline_ptr);
+            len--;
+            redraw = 1;
+        }
+        break;
+
+    case KEY_CTRL('U'):
+        if (len) {
+            len = cmdline_ptr = 0;
+            cmdline[len] = '\0';
+            redraw = 1;
+            printf("\0338"); 		//Recover cursor with scroll
+            printf("\033[0J");		//Clear screen from cursor down
+        }
+        break;
+
+    case KEY_CTRL('W'):
+        if (cmdline_ptr) {
+            int prevcursor = cmdline_ptr;
+
+            while (cmdline_ptr && my_isspace(cmdline[cmdline_ptr - 1]))
+                cmdline_ptr--;
+
+            while (cmdline_ptr && !my_isspace(cmdline[cmdline_ptr - 1]))
+                cmdline_ptr--;
 
 #if 0
-		memmove(cmdline + cursor, cmdline + prevcursor,
-			len - prevcursor + 1);
+            memmove(cmdline + cmdline_ptr, cmdline + prevcursor,
+                len - prevcursor + 1);
 #else
-		{
-		    int i;
-		    char *q = cmdline + cursor;
-		    char *p = cmdline + prevcursor;
-		    for (i = 0; i < len - prevcursor + 1; i++)
-			*q++ = *p++;
-		}
+            {
+                int i;
+                char *q = cmdline + cmdline_ptr;
+                char *p = cmdline + prevcursor;
+                for (i = 0; i < len - prevcursor + 1; i++)
+                *q++ = *p++;
+            }
 #endif
-		len -= (prevcursor - cursor);
-		redraw = 1;
-	    }
-	    break;
+            len -= (prevcursor - cmdline_ptr);
+            redraw = 1;
+            printf("\0338"); 		//Recover cursor with scroll
+            printf("\033[0J");		//Clear screen from cursor down
+        }
+        break;
 
-	case KEY_LEFT:
-	case KEY_CTRL('B'):
-	    if (cursor) {
-		cursor--;
-		redraw = 1;
-	    }
-	    break;
+    case KEY_LEFT:
+    case KEY_CTRL('B'):
+        if (cmdline_ptr) {
+            cmdline_ptr--;
+            redraw = 1;
+        }
+        break;
 
-	case KEY_RIGHT:
-	case KEY_CTRL('F'):
-	    if (cursor < len) {
-		putchar(cmdline[cursor]);
-		cursor++;
-		x++;
-		if (x >= width) {
-		    printf("\r\n");
-		    y++;
-		    x = 0;
-		}
-	    }
-	    break;
+    case KEY_RIGHT:
+    case KEY_CTRL('F'):
+        if (cmdline_ptr < len) {
+            putchar(cmdline[cmdline_ptr]);
+            cmdline_ptr++;
+        }
+        break;
 
-	case KEY_CTRL('K'):
-	    if (cursor < len) {
-		cmdline[len = cursor] = '\0';
-		redraw = 1;
-	    }
-	    break;
+    case KEY_CTRL('K'):
+        if (cmdline_ptr < len) {
+            cmdline[len = cmdline_ptr] = '\0';
+            redraw = 1;
+            printf("\033[0J");		//Clear screen from cursor down
+        }
+        break;
 
-	case KEY_HOME:
-	case KEY_CTRL('A'):
-	    if (cursor) {
-		cursor = 0;
-		redraw = 1;
-	    }
-	    break;
+    case KEY_HOME:
+    case KEY_CTRL('A'):
+        if (cmdline_ptr) {
+            cmdline_ptr = 0;
+            redraw = 1;
+        }
+        break;
 
-	case KEY_END:
-	case KEY_CTRL('E'):
-	    if (cursor != len) {
-		cursor = len;
-		redraw = 1;
-	    }
-	    break;
+    case KEY_END:
+    case KEY_CTRL('E'):
+        if (cmdline_ptr != len) {
+            cmdline_ptr = len;
+            redraw = 1;
+        }
+        break;
 
-	case KEY_F1:
-	case KEY_F2:
-	case KEY_F3:
-	case KEY_F4:
-	case KEY_F5:
-	case KEY_F6:
-	case KEY_F7:
-	case KEY_F8:
-	case KEY_F9:
-	case KEY_F10:
-	case KEY_F11:
-	case KEY_F12:
-	    if (show_fkey != NULL) {
-		(*show_fkey) (key);
-		redraw = 1;
-	    }
-	    break;
-	case KEY_CTRL('P'):
-	case KEY_UP:
-	    {
-		if (!list_empty(&cli_history_head)) {
-		    struct list_head *next;
+    case KEY_F1:
+    case KEY_F2:
+    case KEY_F3:
+    case KEY_F4:
+    case KEY_F5:
+    case KEY_F6:
+    case KEY_F7:
+    case KEY_F8:
+    case KEY_F9:
+    case KEY_F10:
+    case KEY_F11:
+    case KEY_F12:
+        if (show_fkey != NULL) {
+            if((*show_fkey) (key)==0)
+                printf("\0337"); 		//save cursor with scroll
+            redraw = 1;
+        }
+        break;
+    case KEY_CTRL('P'):
+    case KEY_UP:
+        {
+            if (!list_empty(&cli_history_head)) {
+                struct list_head *next;
 
-		    if (!comm_counter)
-			next = cli_history_head.next;
-		    else
-			next = comm_counter->list.next;
+                if (!comm_counter)
+                    next = cli_history_head.next;
+                else
+                    next = comm_counter->list.next;
 
-		    comm_counter =
-			list_entry(next, typeof(*comm_counter), list);
+                comm_counter =
+                    list_entry(next, typeof(*comm_counter), list);
 
-		    if (&comm_counter->list != &cli_history_head)
-			strcpy(cmdline, comm_counter->command);
+                if (&comm_counter->list != &cli_history_head)
+                    strcpy(cmdline, comm_counter->command);
 
-		    cursor = len = strlen(cmdline);
-		    redraw = 1;
-		}
-	    }
-	    break;
-	case KEY_CTRL('N'):
-	case KEY_DOWN:
-	    {
-		if (!list_empty(&cli_history_head)) {
-		    struct list_head *prev;
+                cmdline_ptr = len = strlen(cmdline);
+                redraw = 1;
+                printf("\0338"); 		//Recover cursor with scroll
+                printf("\033[0J");		//Clear screen from cursor down
+            }
+        }
+        break;
+    case KEY_CTRL('N'):
+    case KEY_DOWN:
+        {
+            if (!list_empty(&cli_history_head)) {
+                struct list_head *prev;
 
-		    if (!comm_counter)
-			prev = cli_history_head.prev;
-		    else
-			prev = comm_counter->list.prev;
+                if (!comm_counter)
+                    prev = cli_history_head.prev;
+                else
+                    prev = comm_counter->list.prev;
 
-		    comm_counter =
-			list_entry(prev, typeof(*comm_counter), list);
+                comm_counter =
+                    list_entry(prev, typeof(*comm_counter), list);
 
-		    if (&comm_counter->list != &cli_history_head)
-			strcpy(cmdline, comm_counter->command);
+                if (&comm_counter->list != &cli_history_head)
+                    strcpy(cmdline, comm_counter->command);
 
-		    cursor = len = strlen(cmdline);
-		    redraw = 1;
-		}
-	    }
-	    break;
-	case KEY_CTRL('R'):
-	    {
-	         /* 
-	          * Handle this case in another function, since it's 
-	          * a kind of special.
-	          */
-	        const char *p = cmd_reverse_search(&cursor, &kbd_to, &tto);
-	        if (p) {
-	            strcpy(cmdline, p);
-		    len = strlen(cmdline);
-	        } else {
-	            cmdline[0] = '\0';
-		    cursor = len = 0;
-	        }
-	        redraw = 1;
-	    }
-	    break;
-	case KEY_TAB:
-	    {
-		const char *p;
-		size_t len;
+                cmdline_ptr = len = strlen(cmdline);
+                redraw = 1;
+                printf("\0338"); 		//Recover cursor wih scroll
+                printf("\033[0J");		//Clear screen from cursor down
+            }
+        }
+        break;
+    case KEY_CTRL('R'):
+        {
+             /*
+              * Handle this case in another function, since it's
+              * a kind of special.
+              */
+            const char *p = cmd_reverse_search(&cmdline_ptr, &kbd_to, &tto);
+            if (p) {
+                strcpy(cmdline, p);
+                len = strlen(cmdline);
+            } else {
+                cmdline[0] = '\0';
+                cmdline_ptr = len = 0;
+            }
+            redraw = 1;
+        }
+        break;
+    case KEY_TAB:
+        {
+            const char *p;
+            size_t len;
 
-		/* Label completion enabled? */
-		if (nocomplete)
-	            break;
+            /* Label completion enabled? */
+            if (nocomplete)
+                break;
 
-		p = cmdline;
-		len = 0;
-		while(*p && !my_isspace(*p)) {
-		    p++;
-		    len++;
-		}
+            p = cmdline;
+            len = 0;
+            while(*p && !my_isspace(*p)) {
+                p++;
+                len++;
+            }
 
-		print_labels(cmdline, len);
-		redraw = 1;
-		break;
-	    }
-	case KEY_CTRL('V'):
-	    if (BIOSName)
-		printf("%s%s%s", syslinux_banner,
-		       (char *)MK_PTR(0, BIOSName), copyright_str);
-	    else
-		printf("%s%s", syslinux_banner, copyright_str);
+            if(print_labels(cmdline, len))
+                printf("\0337"); 		//save cursor with scroll
+            redraw = 1;
+            break;
+        }
+    case KEY_CTRL('V'):
+        if (BIOSName)
+            printf("%s%s%s", syslinux_banner,
+                (char *)MK_PTR(0, BIOSName), copyright_str);
+        else
+            printf("%s%s", syslinux_banner, copyright_str);
 
-	    redraw = 1;
-	    break;
+        printf("\0337"); 		//save cursor with scroll
+        redraw = 1;
+        break;
 
-	default:
-	    if (key >= ' ' && key <= 0xFF && len < MAX_CMDLINE_LEN - 1) {
-		if (cursor == len) {
-		    cmdline[len++] = key;
-		    cmdline[len] = '\0';
-		    putchar(key);
-		    cursor++;
-		    x++;
-		    if (x >= width) {
-			printf("\r\n\033[K");
-			y++;
-			x = 0;
-		    }
-		    prev_len++;
-		} else {
-		    if (cursor > len)
-			return NULL;
+    default:
+        if (key >= ' ' && key <= 0xFF && len < MAX_CMDLINE_LEN - 1)
+        {
+            if (cmdline_ptr == len)
+            {
+                cmdline[len++] = key;
+                cmdline[len] = '\0';
+                putchar(key);
+                cmdline_ptr++;
+            }
+            else
+            {
+                if (cmdline_ptr > len)
+                    return NULL;
 
-		    memmove(cmdline + cursor + 1, cmdline + cursor,
-			    len - cursor + 1);
-		    cmdline[cursor++] = key;
-		    len++;
-		    redraw = 1;
-		}
-	    }
-	    break;
-	}
+                memmove(cmdline + cmdline_ptr + 1, cmdline + cmdline_ptr,
+                    len - cmdline_ptr + 1);
+                cmdline[cmdline_ptr++] = key;
+                len++;
+                redraw = 1;
+            }
+        }
+        break;
+    }
     }
 
     printf("\033[?7h");
@@ -464,10 +454,10 @@ const char *edit_cmdline(const char *input, int top /*, int width */ ,
     /* Add the command to the history if its length is larger than 0 */
     len = strlen(ret);
     if (len > 0) {
-	comm_counter = malloc(sizeof(struct cli_command));
-	comm_counter->command = malloc(sizeof(char) * (len + 1));
-	strcpy(comm_counter->command, ret);
-	list_add(&(comm_counter->list), &cli_history_head);
+        comm_counter = malloc(sizeof(struct cli_command));
+        comm_counter->command = malloc(sizeof(char) * (len + 1));
+        strcpy(comm_counter->command, ret);
+        list_add(&(comm_counter->list), &cli_history_head);
     }
 
     return len ? ret : NULL;
