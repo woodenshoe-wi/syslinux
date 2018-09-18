@@ -51,6 +51,7 @@ static const struct term_state default_state = {
     .autocr = true,	  	/* Mimic \n -> \r\n conversion by default */
     .autowrap = true,		/* Wrap lines by default */
     .saved_xy = {0, 0},
+    .saved_scrolled_xy = {0, 0},
     .cursor = true,
 };
 
@@ -67,7 +68,7 @@ void __ansi_init(const struct term_info *ti)
     memcpy(ti->ts, &default_state, sizeof default_state);
 }
 
-void __ansi_putchar(const struct term_info *ti, uint8_t ch)
+void __ansi_putchar(struct term_info *ti, uint8_t ch)
 {
     const struct ansi_ops *op = ti->op;
     struct term_state *st = ti->ts;
@@ -151,6 +152,14 @@ void __ansi_putchar(const struct term_info *ti, uint8_t ch)
 	    memcpy(&st, &default_state, sizeof st);
 	    op->erase(st, 0, 0, cols - 1, rows - 1);
 	    xy.x = xy.y = 0;
+	    st->state = st_init;
+	    break;
+	case '7':
+	    st->saved_scrolled_xy = xy;
+	    st->state = st_init;
+	    break;
+	case '8':
+	    xy = st->saved_scrolled_xy;
 	    st->state = st_init;
 	    break;
 	default:
@@ -371,6 +380,15 @@ void __ansi_putchar(const struct term_info *ti, uint8_t ch)
 		case 's':
 		    st->saved_xy = xy;
 		    break;
+		case 't':
+		    {
+			if( st->parms[0]==8)
+			{
+			    ti->rows = st->parms[1];
+			    ti->cols = st->parms[2];
+			}
+		    }
+		    break;
 		case 'u':
 		    xy = st->saved_xy;
 		    break;
@@ -436,6 +454,8 @@ void __ansi_putchar(const struct term_info *ti, uint8_t ch)
     while (xy.y >= rows) {
 	xy.y--;
 	op->scroll_up(st);
+	if(st->saved_scrolled_xy.y > 0)
+	    st->saved_scrolled_xy.y--;
     }
 
     /* Update cursor position */

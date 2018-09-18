@@ -30,6 +30,7 @@ struct term_state {
     bool pvt;			/* Private code? */
     struct curxy xy;
     struct curxy saved_xy;
+    struct curxy saved_scrolled_xy;
     attr_t cindex;		/* SOH color index */
     uint8_t fg;
     uint8_t bg;
@@ -61,7 +62,7 @@ struct term_info {
 };
 
 void __ansi_init(const struct term_info *ti);
-void __ansi_putchar(const struct term_info *ti, uint8_t ch);
+void __ansi_putchar(struct term_info *ti, uint8_t ch);
 void __ansicon_beep(void);
 
 #endif /* COM32_LIB_SYS_ANSI_H */
