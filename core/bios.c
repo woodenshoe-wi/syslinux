@@ -52,6 +52,9 @@ static void bios_get_cursor(uint8_t *x, uint8_t *y)
 
 static void bios_erase(int x0, int y0, int x1, int y1, uint8_t attribute)
 {
+    if(UsingVGA)
+        attribute= 0x00; //idx color corresponding to background
+
     static com32sys_t ireg;
     memset(&ireg, 0, sizeof(ireg));
 
@@ -111,6 +114,9 @@ static void bios_write_char(uint8_t ch, uint8_t attribute)
 
 static void bios_scroll_up(uint8_t cols, uint8_t rows, uint8_t attribute)
 {
+    if(UsingVGA)
+        attribute= 0x00; //idx color corresponding to background
+
     static com32sys_t ireg;
 
     memset(&ireg, 0, sizeof(ireg));
