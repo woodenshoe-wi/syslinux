@@ -467,19 +467,46 @@ static struct menu *end_submenu(void)
     return current_menu->parent ? current_menu->parent : current_menu;
 }
 
-void print_labels(const char *prefix, size_t len)
+bool print_labels(const char *prefix, size_t len)
 {
+ // #define PL_SILENT		//TAB silent if not match (XTERM)
+
     struct menu_entry *me;
 
-    printf("\n");
+#ifdef PL_SILENT
+    bool f_prt = false;
+
     for (me = all_entries; me; me = me->next ) {
 	if (!me->label)
 	    continue;
 
 	if (!strncmp(prefix, me->label, len))
-	    printf(" %s", me->label);
+        {
+            if(!f_prt)
+            {
+                printf("\n");
+                f_prt=true;
+            }
+            printf(" %s", me->label);
+        }
+    }
+    if(f_prt)
+        printf("\n");
+
+    return(f_prt);
+#else
+    printf("\n");
+    for (me = all_entries; me; me = me->next ) {
+        if (!me->label)
+            continue;
+
+        if (!strncmp(prefix, me->label, len))
+            printf(" %s", me->label);
     }
     printf("\n");
+
+    return(true);
+#endif
 }
 
 struct menu_entry *find_label(const char *str)
@@ -675,7 +702,7 @@ static char *is_message_name(char *cmdstr, enum message_number *msgnr)
 
 extern void get_msg_file(char *);
 
-void cat_help_file(int key)
+int cat_help_file(int key)
 {
 	struct menu *cm = current_menu;
 	int fkey;
@@ -723,12 +750,14 @@ void cat_help_file(int key)
 	}
 
 	if (fkey == -1)
-		return;
+		return -1;
 
 	if (cm->fkeyhelp[fkey].textname) {
 		printf("\n");
 		get_msg_file((char *)cm->fkeyhelp[fkey].textname);
+		return 0;
 	}
+	return -1;
 }
 
 static char *is_fkey(char *cmdstr, int *fkeyno)
