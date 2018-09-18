@@ -28,7 +28,11 @@
 
 __export uint8_t UsingVGA = 0;
 uint16_t VGAPos;		/* Pointer into VGA memory */
-__export uint16_t *VGAFilePtr;	/* Pointer into VGAFileBuf */
+
+//patmod 	Adrian fix on LSS16 filename being truncated
+//__export uint16_t *VGAFilePtr;	/* Pointer into VGAFileBuf */
+__export char *VGAFilePtr;	/* Pointer into VGAFileBuf */
+
 __export uint16_t VGAFontSize = 16;	/* Defaults to 16 byte font */
 
 __export char VGAFileBuf[VGA_FILE_BUF_SIZE];	/* Unmangled VGA image name */
@@ -40,24 +44,22 @@ static uint8_t VGAPlaneBuffer[(640/8) * 4]; /* Plane buffers */
 extern uint16_t GXPixCols;
 extern uint16_t GXPixRows;
 
-/* Maps colors to consecutive DAC registers */
-static uint8_t linear_color[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8,
-				  9, 10, 11, 12, 13, 14, 15, 0 };
+#define BIOS_ROWS (*(uint8_t *)0x484)	/* Minus one; if zero use 24 (= 25 lines) */
+#define BIOS_COLS (*(uint16_t *)0x44A)
+
 
 static FILE *fd;
 
-typedef struct {
+typedef struct __packed {
 	uint32_t LSSMagic;	/* Magic number */
 	uint16_t GraphXSize;	/* Width of splash screen file */
 	uint16_t GraphYSize;	/* Height of splash screen file */
 	uint8_t GraphColorMap[3*16];
+
 } lssheader_t;
 
-static lssheader_t LSSHeader;
+static __lowmem lssheader_t LSSHeader;
 
-#define LSSMagic	LSSHeader.LSSMagic
-#define GraphXSize	LSSHeader.GraphXSize
-#define GraphYSize	LSSHeader.GraphYSize
 
 /*
  * Enable VGA graphics, if possible. Return 0 on success.
@@ -66,7 +68,7 @@ static int vgasetmode(void)
 {
 	com32sys_t ireg, oreg;
 
-	if (UsingVGA)
+	if (UsingVGA == 1)
 		return 0;		/* Nothing to do... */
 
 	memset(&ireg, 0, sizeof(ireg));
@@ -98,10 +100,21 @@ static int vgasetmode(void)
 	ireg.eax.w[0] = 0x0012;	/* Set mode = 640x480 VGA 16 colors */
 	__intcall(0x10, &ireg, &oreg);
 
+
+	// Maps colors to consecutive DAC registers
+	uint8_t * linear_color = lmalloc(16+1);
+	if (!linear_color)
+		return -1;
+	int i;
+	for (i=0;i<=0x0F;i++)linear_color[i]=i;
+	linear_color[0x10]=0;
+
 	memset(&ireg, 0, sizeof(ireg));
-	ireg.edx.w[0] = (uint32_t)linear_color;
+	ireg.edx.w[0] = OFFS(linear_color);
+	ireg.es = SEG(linear_color);
 	ireg.eax.w[0] = 0x1002;	/* Write color registers */
 	__intcall(0x10, &ireg, &oreg);
+	lfree(linear_color);
 
 	UsingVGA = 1;
 
@@ -110,21 +123,30 @@ static int vgasetmode(void)
 	GXPixRows = 480;
 
 	use_font();
+
 	ScrollAttribute = 0;
+
+
+	if( BIOS_ROWS && BIOS_COLS)
+		printf("\033[8;%d;%dt",BIOS_ROWS+1,BIOS_COLS); 	//set the new terminal screen size
+
 
 	return 0;
 }
 
-static inline char getnybble(void)
+static inline char getnybble(uint8_t* last_nybble)
 {
-	char data = getc(fd);
+	char data;
 
-	if (data & 0x10) {
-		data &= 0x0F;
-		return data;
+	if (*last_nybble & 0x10) {
+		*last_nybble &= 0x0F;
+		return *last_nybble;
 	}
 
 	data = getc(fd);
+
+	*last_nybble = (data >>4) | 0x10; //Flag nibble already read
+
 	return (data & 0x0F);
 }
 
@@ -138,74 +160,86 @@ static inline char getnybble(void)
  */
 static void rledecode(uint8_t *out, size_t count)
 {
-	uint8_t prev_pixel = 0;
-	size_t size = count;
-	uint8_t data;
-	int i;
 
-again:
-	for (i = 0; i < size; i++) {
+	uint16_t i;
+	uint16_t data;
 
-		data = getnybble();
-		if (data == prev_pixel)
-			break;
+	uint8_t last_pixel = 0;
+	uint8_t last_nybble = 0;
 
-		*out++ = data;
-		prev_pixel = data;
-	}
+	do
+	{
+		do //detect Start of run sequence
+		{
+			data = getnybble(&last_nybble);
+			if (data == last_pixel)
+				break;	// Start of run sequence detected
+			*out++ = (uint8_t) data;
+			last_pixel = data;
+		} while(--count);
 
-	size -= i;
-	if (!size)
-		return;
+		if(!count)
+			return;	// nothing to do
 
-	/* Start of run sequence */
-	data = getnybble();
-	if (data == 0) {
-		/* long run */
-		uint8_t hi;
 
-		data = getnybble();
-		hi = getnybble();
-		hi <<= 4;
-		data |= hi;
-		data += 16;
-	}
+		//Start of run sequence
+		data = getnybble(&last_nybble);
+		uint16_t BX = 0;
+		BX = (BX | data) & 0x0F;
 
-	/* dorun */
-	for (i = 0; i < data; i++)
-		*out++ = prev_pixel;
+		if (data == 0)
+		{
+			// long run
+			uint8_t hi;
 
-	size -= i;
-	if (size)
-		goto again;
+			BX = getnybble(&last_nybble);
+			hi = getnybble(&last_nybble);
+			hi <<= 4;
+			BX |= hi;
+			BX += 16;
+		}
+
+		//sanity check
+		if(data > count)
+			data = count;
+
+		/* dorun */
+		for (i = 0; i < BX; i++)
+			*out++ = last_pixel;
+
+		count-= BX;
+	} while(count);
 }
 
 /*
  * packedpixel2vga:
  *	Convert packed-pixel to VGA bitplanes
  *
- * 'in': packed pixel string (640 pixels)
- * 'out': output (four planes @ 640/8 = 80 bytes)
+ * 'in': packed row of 640 pixels;  640 pixels x 4bit/pixel (16 colors) x 1Byte/8bit => string of 320 bytes
+ * 'out': output (4 "planes" of 640/8 = 80 bytes)
  * 'count': pixel count (multiple of 8)
  */
 static void packedpixel2vga(const uint8_t *in, uint8_t *out)
 {
 	int i, j, k;
+	uint8_t px;
+	uint8_t ob;
+	const uint8_t *ip;
 
+	//plane loop
 	for (i = 0; i < 4; i++) {
-		const uint8_t *ip = in;
-
+		ip = in;
 		for (j = 0; j < 640/8; j++) {
-			uint8_t ob = 0;
-
+			ob = 0;			//output byte
 			for (k = 0; k < 8; k++) {
-				uint8_t px = *ip++;
-				ob = (ob << 1) | ((px >> i) & 1);
+				px = *ip++;
+				px = px >> i;
+				px &=0x01;
+				ob |= (px << (7-k));
 			}
-
 			*out++ = ob;
 		}
-	}
+	}				//plane loop
 }
 
 /*
@@ -226,7 +260,7 @@ static void outputvga(const void *in, void *out)
 		/* Select the bit plane to write */
 		outb(i, VGA_SEQ_DATA);
 		memcpy(out, in, 640/8);
-		in = (const char *)in + 640/8;
+		in = (uint8_t *)in + 640/8;
 	}
 }
 
@@ -247,12 +281,13 @@ __export void vgadisplayfile(FILE *_fd)
 	syslinux_force_text_mode();
 	vgasetmode();
 
-	size = 4+2*2+16*3;
+	size = sizeof(lssheader_t);
 	p = (char *)&LSSHeader;
-
 	/* Load the header */
 	while (size--)
-		*p = getc(fd);
+		*p++ = getc(fd);
+	p--;
+
 
 	if (*p != EOF) {
 		com32sys_t ireg, oreg;
@@ -260,13 +295,14 @@ __export void vgadisplayfile(FILE *_fd)
 		int i;
 
 		/* The header WILL be in the first chunk. */
-		if (LSSMagic != 0x1413f33d)
+		if (LSSHeader.LSSMagic != 0x1413f33d)
 			return;
 
 		memset(&ireg, 0, sizeof(ireg));
 
 		/* Color map offset */
-		ireg.edx.w[0] = offsetof(lssheader_t, GraphColorMap);
+		ireg.edx.w[0] = OFFS(LSSHeader.GraphColorMap);
+		ireg.es = SEG(LSSHeader.GraphColorMap);
 
 		ireg.eax.w[0] = 0x1012;	       /* Set RGB registers */
 		ireg.ebx.w[0] = 0;	       /* First register number */
@@ -274,33 +310,31 @@ __export void vgadisplayfile(FILE *_fd)
 		__intcall(0x10, &ireg, &oreg);
 
 		/* Number of pixel rows */
-		rows = (GraphYSize + VGAFontSize) - 1;
+		rows = (LSSHeader.GraphYSize + VGAFontSize) - 1;
 		rows = rows / VGAFontSize;
 		if (rows >= VidRows)
 			rows = VidRows - 1;
 
-		memset(&ireg, 0, sizeof(ireg));
 
-		ireg.edx.b[1] = rows;
-		ireg.eax.b[1] = 2;
-		ireg.ebx.w[0] = 0;
+		printf("\033[%d;%dH",rows+1,0);		//set cursor row,col
 
-		/* Set cursor below image */
-		__intcall(0x10, &ireg, &oreg);
 
-		rows = GraphYSize; /* Number of graphics rows */
+
+		rows = LSSHeader.GraphYSize; /* Number of graphics rows */
 		VGAPos = 0;
 
+
+		uint8_t* vidmem = (0xA0000) + VGAPos;
 		for (i = 0; i < rows; i++) {
 			/* Pre-clear the row buffer */
 			memset(VGARowBuffer, 0, 640);
 
 			/* Decode one row */
-			rledecode(VGARowBuffer, GraphXSize);
+			rledecode(VGARowBuffer, LSSHeader.GraphXSize);
 
 			packedpixel2vga(VGARowBuffer, VGAPlaneBuffer);
-			outputvga(VGAPlaneBuffer, MK_PTR(0xA000, VGAPos));
-			VGAPos += 640/8;
+			outputvga(VGAPlaneBuffer, vidmem);
+			vidmem += 640/8;
 		}
 	}
 }
@@ -335,6 +369,9 @@ __export void syslinux_force_text_mode(void)
 	ScrollAttribute = 0x7;
 	/* Restore text font/data */
 	use_font();
+
+	if( BIOS_ROWS && BIOS_COLS)
+	    printf("\033[8;%d;%dt",BIOS_ROWS+1,BIOS_COLS); 	//set the new terminal screen size
 }
 
 static void vgacursorcommon(char data)

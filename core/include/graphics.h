@@ -41,7 +41,7 @@
 
 extern uint8_t UsingVGA;
 extern uint16_t VGAPos;
-extern uint16_t *VGAFilePtr;
+extern char *VGAFilePtr;
 extern char VGAFileBuf[VGA_FILE_BUF_SIZE];
 extern char VGAFileMBuf[];
 extern uint16_t VGAFontSize;
